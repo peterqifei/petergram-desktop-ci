@@ -1,0 +1,346 @@
+# Canonical copy. scripts/github-build.ps1 syncs it to .github/workflows/windows.yml
+# on main of the build-only repo peterqifei/petergram-desktop-ci (D83); this tree
+# itself never carries .github. The runner fetches the exact commit from public
+# GitLab and runs the repo's own scripts from ci/github-build/windows/.
+#
+# Jobs: libraries -> (libraries-resume, only when the first pass ran out of
+# time) -> build. Each prepare pass saves its finished stages (prepare.py writes
+# one cache key per finished stage), so a cold dependency build spreads over
+# several 6 h jobs and later runs restore it in minutes.
+#
+# Sources live at C:\pg (short paths, no links under them: source_tree.py refuses
+# links). As upstream tdesktop win.yml does, the caches go through a directory
+# link inside the workspace (CACHE_ROOT), which actions/cache handles on Windows.
+name: windows
+run-name: windows ${{ inputs.request_id }} ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-hex Petergram commit on gitlab.com
+        required: true
+        type: string
+      request_id:
+        description: Caller request id, matched in the run title
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: windows-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_URL: https://gitlab.com/my-denia-group/Petergram.git
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  REQUEST_ID: ${{ inputs.request_id }}
+  PG_ROOT: C:\pg
+  PG_LIBS: C:\pg\vendor\Libraries\win64
+  PG_THIRDPARTY: C:\pg\vendor\ThirdParty
+  GIT_AUTHOR_NAME: petergram-ci
+  GIT_AUTHOR_EMAIL: ci@example.invalid
+  GIT_COMMITTER_NAME: petergram-ci
+  GIT_COMMITTER_EMAIL: ci@example.invalid
+  PYTHONUNBUFFERED: "1"
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  libraries:
+    runs-on: windows-2025
+    timeout-minutes: 350
+    outputs:
+      status: ${{ steps.finish.outputs.status }}
+      tp_key: ${{ steps.finish.outputs.tp_key }}
+      libs_key: ${{ steps.finish.outputs.libs_key }}
+      qt_key: ${{ steps.finish.outputs.qt_key }}
+    steps:
+      - name: Fetch exact source from GitLab
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be 40 lowercase hex' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
+          "JOB_STARTED_UTC=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Add-Content -LiteralPath $env:GITHUB_ENV
+          git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT checkout --quiet --detach FETCH_HEAD; if ($LASTEXITCODE) { exit 1 }
+          $head = git -C $env:PG_ROOT rev-parse HEAD
+          if ($head -cne $env:SOURCE_SHA) { throw "fetched $head, expected $env:SOURCE_SHA" }
+          $link = Join-Path $env:GITHUB_WORKSPACE 'pg'
+          New-Item -ItemType SymbolicLink -Path $link -Target $env:PG_ROOT | Out-Null
+          "CACHE_LIBS=$link\vendor\Libraries\win64" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "CACHE_THIRDPARTY=$link\vendor\ThirdParty" | Add-Content -LiteralPath $env:GITHUB_ENV
+      - name: Bootstrap source
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\bootstrap.ps1"
+      - name: Restore ThirdParty
+        id: tp
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_THIRDPARTY }}
+          key: pg-win2025-tp-v1-none
+          restore-keys: pg-win2025-tp-v1-
+      - name: Restore Libraries
+        id: libs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\*
+            !${{ env.CACHE_LIBS }}\cache_keys
+            !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\*
+            !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: pg-win2025-libs-v1-none
+          restore-keys: pg-win2025-libs-v1-
+      - name: Restore Qt
+        id: qt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: pg-win2025-qt-v1-none
+          restore-keys: pg-win2025-qt-v1-
+      - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
+        id: prepare
+        timeout-minutes: 300
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare -StopAtJobMinute 300
+      - name: Trim intermediates (upstream filter)
+        if: always()
+        shell: bash
+        run: bash "$(cygpath -u "$PG_ROOT")/ci/github-build/windows/trim-libraries.sh" "$(cygpath -u "$PG_LIBS")"
+      - name: Fingerprint finished stages
+        id: finish
+        if: always()
+        env:
+          PREPARE_STATUS: ${{ steps.prepare.outputs.status }}
+          RESTORED_TP: ${{ steps.tp.outputs.cache-matched-key }}
+          RESTORED_LIBS: ${{ steps.libs.outputs.cache-matched-key }}
+          RESTORED_QT: ${{ steps.qt.outputs.cache-matched-key }}
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step finish
+      - name: Save ThirdParty
+        if: always() && steps.finish.outputs.tp_save == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_THIRDPARTY }}
+          key: ${{ steps.finish.outputs.tp_key }}
+      - name: Save Libraries
+        if: always() && steps.finish.outputs.libs_save == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\*
+            !${{ env.CACHE_LIBS }}\cache_keys
+            !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\*
+            !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ steps.finish.outputs.libs_key }}
+      - name: Save Qt
+        if: always() && steps.finish.outputs.qt_save == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ steps.finish.outputs.qt_key }}
+      - name: Stop on a prepare error
+        if: always()
+        env:
+          PREPARE_STATUS: ${{ steps.prepare.outputs.status }}
+        run: |
+          if ($env:PREPARE_STATUS -ne 'success' -and $env:PREPARE_STATUS -ne 'timeout') {
+            throw "prepare-libraries ended with status '$env:PREPARE_STATUS' (log tail above). Finished stages are cached."
+          }
+      - name: Machine after
+        if: always()
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\machine.ps1" -Label after-libraries
+
+  # Same steps as `libraries`; runs only when the first pass hit its time limit.
+  libraries-resume:
+    needs: libraries
+    if: always() && needs.libraries.outputs.status == 'timeout'
+    runs-on: windows-2025
+    timeout-minutes: 350
+    outputs:
+      status: ${{ steps.finish.outputs.status }}
+      tp_key: ${{ steps.finish.outputs.tp_key }}
+      libs_key: ${{ steps.finish.outputs.libs_key }}
+      qt_key: ${{ steps.finish.outputs.qt_key }}
+    steps:
+      - name: Fetch exact source from GitLab
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be 40 lowercase hex' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
+          "JOB_STARTED_UTC=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Add-Content -LiteralPath $env:GITHUB_ENV
+          git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT checkout --quiet --detach FETCH_HEAD; if ($LASTEXITCODE) { exit 1 }
+          $head = git -C $env:PG_ROOT rev-parse HEAD
+          if ($head -cne $env:SOURCE_SHA) { throw "fetched $head, expected $env:SOURCE_SHA" }
+          $link = Join-Path $env:GITHUB_WORKSPACE 'pg'
+          New-Item -ItemType SymbolicLink -Path $link -Target $env:PG_ROOT | Out-Null
+          "CACHE_LIBS=$link\vendor\Libraries\win64" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "CACHE_THIRDPARTY=$link\vendor\ThirdParty" | Add-Content -LiteralPath $env:GITHUB_ENV
+      - name: Bootstrap source
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\bootstrap.ps1"
+      - name: Restore ThirdParty
+        id: tp
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_THIRDPARTY }}
+          key: ${{ needs.libraries.outputs.tp_key }}
+          restore-keys: pg-win2025-tp-v1-
+      - name: Restore Libraries
+        id: libs
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\*
+            !${{ env.CACHE_LIBS }}\cache_keys
+            !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\*
+            !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ needs.libraries.outputs.libs_key }}
+          restore-keys: pg-win2025-libs-v1-
+      - name: Restore Qt
+        id: qt
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ needs.libraries.outputs.qt_key }}
+          restore-keys: pg-win2025-qt-v1-
+      - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
+        id: prepare
+        timeout-minutes: 300
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare -StopAtJobMinute 300
+      - name: Trim intermediates (upstream filter)
+        if: always()
+        shell: bash
+        run: bash "$(cygpath -u "$PG_ROOT")/ci/github-build/windows/trim-libraries.sh" "$(cygpath -u "$PG_LIBS")"
+      - name: Fingerprint finished stages
+        id: finish
+        if: always()
+        env:
+          PREPARE_STATUS: ${{ steps.prepare.outputs.status }}
+          RESTORED_TP: ${{ steps.tp.outputs.cache-matched-key }}
+          RESTORED_LIBS: ${{ steps.libs.outputs.cache-matched-key }}
+          RESTORED_QT: ${{ steps.qt.outputs.cache-matched-key }}
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step finish
+      - name: Save ThirdParty
+        if: always() && steps.finish.outputs.tp_save == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_THIRDPARTY }}
+          key: ${{ steps.finish.outputs.tp_key }}
+      - name: Save Libraries
+        if: always() && steps.finish.outputs.libs_save == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\*
+            !${{ env.CACHE_LIBS }}\cache_keys
+            !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\*
+            !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ steps.finish.outputs.libs_key }}
+      - name: Save Qt
+        if: always() && steps.finish.outputs.qt_save == 'true'
+        uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ steps.finish.outputs.qt_key }}
+      - name: Require a finished dependency set
+        if: always()
+        env:
+          PREPARE_STATUS: ${{ steps.prepare.outputs.status }}
+        run: |
+          if ($env:PREPARE_STATUS -ne 'success') {
+            throw "Dependencies are not finished after two prepare passes (status '$env:PREPARE_STATUS'). Finished stages are cached; dispatch the same commit again to continue."
+          }
+      - name: Machine after
+        if: always()
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\machine.ps1" -Label after-libraries-resume
+
+  build:
+    needs: [libraries, libraries-resume]
+    if: >-
+      always() &&
+      (needs.libraries.outputs.status == 'success' || needs.libraries-resume.outputs.status == 'success')
+    runs-on: windows-2025
+    timeout-minutes: 350
+    steps:
+      - name: Fetch exact source from GitLab
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be 40 lowercase hex' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
+          "JOB_STARTED_UTC=$([DateTimeOffset]::UtcNow.ToUnixTimeSeconds())" | Add-Content -LiteralPath $env:GITHUB_ENV
+          git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT checkout --quiet --detach FETCH_HEAD; if ($LASTEXITCODE) { exit 1 }
+          $head = git -C $env:PG_ROOT rev-parse HEAD
+          if ($head -cne $env:SOURCE_SHA) { throw "fetched $head, expected $env:SOURCE_SHA" }
+          $link = Join-Path $env:GITHUB_WORKSPACE 'pg'
+          New-Item -ItemType SymbolicLink -Path $link -Target $env:PG_ROOT | Out-Null
+          "CACHE_LIBS=$link\vendor\Libraries\win64" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "CACHE_THIRDPARTY=$link\vendor\ThirdParty" | Add-Content -LiteralPath $env:GITHUB_ENV
+      - name: Bootstrap source
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\bootstrap.ps1"
+      - name: Restore ThirdParty (exact)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_THIRDPARTY }}
+          key: ${{ needs.libraries-resume.outputs.tp_key || needs.libraries.outputs.tp_key }}
+          fail-on-cache-miss: true
+      - name: Restore Libraries (exact)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\*
+            !${{ env.CACHE_LIBS }}\cache_keys
+            !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\*
+            !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ needs.libraries-resume.outputs.libs_key || needs.libraries.outputs.libs_key }}
+          fail-on-cache-miss: true
+      - name: Restore Qt (exact)
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: ${{ needs.libraries-resume.outputs.qt_key || needs.libraries.outputs.qt_key }}
+          fail-on-cache-miss: true
+      - name: Prepare libraries (expected to skip every stage)
+        timeout-minutes: 120
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare
+      - name: Configure and build Release
+        id: build
+        timeout-minutes: 300
+        env:
+          TDESKTOP_API_ID: ${{ secrets.TDESKTOP_API_ID }}
+          TDESKTOP_API_HASH: ${{ secrets.TDESKTOP_API_HASH }}
+          RUN_ID: ${{ github.run_id }}
+          RUN_ATTEMPT: ${{ github.run_attempt }}
+          BUILD_REPOSITORY: ${{ github.repository }}
+          WORKFLOW_REF: ${{ github.workflow_ref }}
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\build.ps1"
+      - name: Upload Release payload
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: petergram-windows-${{ inputs.source_sha }}
+          path: ${{ steps.build.outputs.artifact_dir }}
+          if-no-files-found: error
+          retention-days: 3
+      - name: Machine after
+        if: always()
+        run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\machine.ps1" -Label after-build
