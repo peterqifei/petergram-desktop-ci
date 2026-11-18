@@ -328,6 +328,16 @@ jobs:
       - name: Prepare libraries (expected to skip every stage)
         timeout-minutes: 120
         run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare
+      # The whole tree is on C:\pg, which had 31 GB free; the first full build (run 44342077136) ran out of
+      # space there while compiling. D: is only the workspace link, so make room on C: by removing toolsets this
+      # build never uses (Python in the tool cache stays: the build scripts run on it).
+      - name: Free disk on C
+        run: |
+          $before = (Get-PSDrive C).Free / 1GB
+          $dirs = @('C:\Android', 'C:\ghcup', 'C:\Julia') + @(Get-ChildItem -Directory -Path 'C:\rtools*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
+          $dirs += @('CodeQL', 'go', 'node', 'PyPy', 'Ruby') | ForEach-Object { Join-Path 'C:\hostedtoolcache\windows' $_ }
+          foreach ($d in $dirs) { if (Test-Path -LiteralPath $d) { cmd /c "rmdir /s /q `"$d`"" 2>&1 | Out-Null } }
+          'free_disk_c_gb before={0:N1} after={1:N1}' -f $before, ((Get-PSDrive C).Free / 1GB)
       - name: Configure and build Release
         id: build
         timeout-minutes: 300
