@@ -99,8 +99,8 @@ jobs:
             !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025-libs-v1-none
-          restore-keys: pg-win2025-libs-v1-
+          key: pg-win2025-libs-v2-none
+          restore-keys: pg-win2025-libs-v2-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -211,7 +211,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.libs_key }}
-          restore-keys: pg-win2025-libs-v1-
+          restore-keys: pg-win2025-libs-v2-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
