@@ -8,8 +8,9 @@
 # one cache key per finished stage), so a cold dependency build spreads over
 # several 6 h jobs and later runs restore it in minutes.
 #
-# Sources live at C:\pg (short paths, no links under them: source_tree.py refuses
-# links). As upstream tdesktop win.yml does, the caches go through a directory
+# Sources live at D:\pg (short paths, no links under them: source_tree.py refuses
+# links). D: because C: has about 30 GB free and the Release out tree alone reached
+# 23.6 GB before the second full build (run 44374448891) ran out of space there. As upstream tdesktop win.yml does, the caches go through a directory
 # link inside the workspace (CACHE_ROOT), which actions/cache handles on Windows.
 name: windows
 run-name: windows ${{ inputs.request_id }} ${{ inputs.source_sha }}
@@ -37,9 +38,9 @@ env:
   SOURCE_URL: https://gitlab.com/my-denia-group/Petergram.git
   SOURCE_SHA: ${{ inputs.source_sha }}
   REQUEST_ID: ${{ inputs.request_id }}
-  PG_ROOT: C:\pg
-  PG_LIBS: C:\pg\vendor\Libraries\win64
-  PG_THIRDPARTY: C:\pg\vendor\ThirdParty
+  PG_ROOT: D:\pg
+  PG_LIBS: D:\pg\vendor\Libraries\win64
+  PG_THIRDPARTY: D:\pg\vendor\ThirdParty
   GIT_AUTHOR_NAME: petergram-ci
   GIT_AUTHOR_EMAIL: ci@example.invalid
   GIT_COMMITTER_NAME: petergram-ci
@@ -328,16 +329,6 @@ jobs:
       - name: Prepare libraries (expected to skip every stage)
         timeout-minutes: 120
         run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare
-      # The whole tree is on C:\pg, which had 31 GB free; the first full build (run 44342077136) ran out of
-      # space there while compiling. D: is only the workspace link, so make room on C: by removing toolsets this
-      # build never uses (Python in the tool cache stays: the build scripts run on it).
-      - name: Free disk on C
-        run: |
-          $before = (Get-PSDrive C).Free / 1GB
-          $dirs = @('C:\Android', 'C:\ghcup', 'C:\Julia') + @(Get-ChildItem -Directory -Path 'C:\rtools*' -ErrorAction SilentlyContinue | ForEach-Object FullName)
-          $dirs += @('CodeQL', 'go', 'node', 'PyPy', 'Ruby') | ForEach-Object { Join-Path 'C:\hostedtoolcache\windows' $_ }
-          foreach ($d in $dirs) { if (Test-Path -LiteralPath $d) { cmd /c "rmdir /s /q `"$d`"" 2>&1 | Out-Null } }
-          'free_disk_c_gb before={0:N1} after={1:N1}' -f $before, ((Get-PSDrive C).Free / 1GB)
       - name: Configure and build Release
         id: build
         timeout-minutes: 300
