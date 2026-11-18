@@ -10,8 +10,12 @@
 #
 # Sources live at D:\pg (short paths, no links under them: source_tree.py refuses
 # links). D: because C: has about 30 GB free and the Release out tree alone reached
-# 23.6 GB before the second full build (run 44374448891) ran out of space there. As upstream tdesktop win.yml does, the caches go through a directory
-# link inside the workspace (CACHE_ROOT), which actions/cache handles on Windows.
+# 23.6 GB before the second full build (run 44374448891) ran out of space there.
+# Cache keys say pg-win2025d-: prepare.py hashes absolute paths into its stage keys,
+# so the sets built under C:\pg are stale here, and rebuilding over them failed at
+# openssl3 (run 44388428310); the D: sets start empty. As upstream tdesktop win.yml
+# does, the caches go through a directory link inside the workspace (CACHE_ROOT),
+# which actions/cache handles on Windows.
 name: windows
 run-name: windows ${{ inputs.request_id }} ${{ inputs.source_sha }}
 
@@ -88,8 +92,8 @@ jobs:
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ${{ env.CACHE_THIRDPARTY }}
-          key: pg-win2025-tp-v1-none
-          restore-keys: pg-win2025-tp-v1-
+          key: pg-win2025d-tp-v1-none
+          restore-keys: pg-win2025d-tp-v1-
       - name: Restore Libraries
         id: libs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -100,8 +104,8 @@ jobs:
             !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025-libs-v2-none
-          restore-keys: pg-win2025-libs-v2-
+          key: pg-win2025d-libs-v2-none
+          restore-keys: pg-win2025d-libs-v2-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -109,8 +113,8 @@ jobs:
           path: |
             ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025-qt-v1-none
-          restore-keys: pg-win2025-qt-v1-
+          key: pg-win2025d-qt-v1-none
+          restore-keys: pg-win2025d-qt-v1-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
         id: prepare
         timeout-minutes: 300
@@ -200,7 +204,7 @@ jobs:
         with:
           path: ${{ env.CACHE_THIRDPARTY }}
           key: ${{ needs.libraries.outputs.tp_key }}
-          restore-keys: pg-win2025-tp-v1-
+          restore-keys: pg-win2025d-tp-v1-
       - name: Restore Libraries
         id: libs
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -212,7 +216,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.libs_key }}
-          restore-keys: pg-win2025-libs-v2-
+          restore-keys: pg-win2025d-libs-v2-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -221,7 +225,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.qt_key }}
-          restore-keys: pg-win2025-qt-v1-
+          restore-keys: pg-win2025d-qt-v1-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
         id: prepare
         timeout-minutes: 300
