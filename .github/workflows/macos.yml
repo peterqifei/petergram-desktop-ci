@@ -5,7 +5,7 @@
 # Output when it does build: an unsigned development .app (TDESKTOP_API_TEST=ON,
 # ad-hoc signature only), zipped. It needs no secrets.
 name: macos
-run-name: macos ${{ inputs.request_id }} ${{ inputs.source_sha }}
+run-name: macos ${{ inputs.request_id }} ${{ inputs.source_sha }} ${{ inputs.runner }}
 
 on:
   workflow_dispatch:
@@ -18,6 +18,17 @@ on:
         description: Caller request id, matched in the run title
         required: true
         type: string
+      # Apple silicon is the target, but on 2026-11-18 two macos-15 (arm64) jobs were never picked up
+      # ("not acquired by Runner of type hosted", with GitHub's arm64 capacity notice); macos-15-intel is the
+      # free x86_64 fallback. Each runner keeps its own dependency cache.
+      runner:
+        description: Hosted macOS runner label
+        required: true
+        default: macos-15
+        type: choice
+        options:
+          - macos-15
+          - macos-15-intel
 
 permissions:
   contents: read
@@ -36,6 +47,7 @@ env:
   GIT_COMMITTER_NAME: petergram-ci
   GIT_COMMITTER_EMAIL: ci@example.invalid
   PYTHONUNBUFFERED: "1"
+  PG_MAC_RUNNER: ${{ inputs.runner }}
 
 defaults:
   run:
@@ -45,7 +57,7 @@ jobs:
   # One prepare pass per run; finished stages are cached even when it runs out of
   # time, so dispatching the same commit again continues the dependency build.
   libraries:
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 350
     outputs:
       key: ${{ steps.finish.outputs.key }}
@@ -70,8 +82,8 @@ jobs:
           path: |
             ${{ env.PG_ROOT }}/vendor/Libraries
             ${{ env.PG_ROOT }}/vendor/ThirdParty
-          key: pg-macos15-libs-v1-none
-          restore-keys: pg-macos15-libs-v1-
+          key: pg-${{ inputs.runner }}-libs-v1-none
+          restore-keys: pg-${{ inputs.runner }}-libs-v1-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and save)
         id: prepare
         timeout-minutes: 300
@@ -103,7 +115,7 @@ jobs:
 
   build:
     needs: libraries
-    runs-on: macos-15
+    runs-on: ${{ inputs.runner }}
     timeout-minutes: 350
     steps:
       - name: Fetch exact source from GitLab
