@@ -45,6 +45,9 @@ env:
   GIT_COMMITTER_NAME: petergram-ci
   GIT_COMMITTER_EMAIL: ci@example.invalid
   PYTHONUNBUFFERED: "1"
+  # The runner's console code page is cp1252; prepare.py prints command lists that cp1252 cannot encode
+  # (the first prepare stopped at the ffmpeg stage with UnicodeEncodeError), so Python writes UTF-8.
+  PYTHONIOENCODING: utf-8
 
 defaults:
   run:
