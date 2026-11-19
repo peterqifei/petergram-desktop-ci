@@ -333,6 +333,12 @@ jobs:
       - name: Prepare libraries (expected to skip every stage)
         timeout-minutes: 120
         run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare
+      # Run 44391001423 failed with MSVC C3859/C1076 on the large qrc_*.cpp sources: the system-managed
+      # pagefile had grown to 19 GB (16 GB RAM) and the commit limit was used up by parallel cl.exe. A fixed
+      # 32 GB pagefile on D: is in place before the build.
+      - name: Pagefile 32 GB on D
+        shell: powershell
+        run: '& "$env:PG_ROOT\ci\github-build\windows\set-pagefile.ps1" -MinimumSize 32GB -MaximumSize 32GB -DiskRoot D:'
       - name: Configure and build Release
         id: build
         timeout-minutes: 300
