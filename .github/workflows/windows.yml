@@ -104,8 +104,8 @@ jobs:
             !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025d-libs-v2-none
-          restore-keys: pg-win2025d-libs-v2-
+          key: pg-win2025d-libs-v3-none
+          restore-keys: pg-win2025d-libs-v3-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -113,8 +113,8 @@ jobs:
           path: |
             ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025d-qt-v1-none
-          restore-keys: pg-win2025d-qt-v1-
+          key: pg-win2025d-qt-v2-none
+          restore-keys: pg-win2025d-qt-v2-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
         id: prepare
         timeout-minutes: 300
@@ -216,7 +216,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.libs_key }}
-          restore-keys: pg-win2025d-libs-v2-
+          restore-keys: pg-win2025d-libs-v3-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -225,7 +225,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.qt_key }}
-          restore-keys: pg-win2025d-qt-v1-
+          restore-keys: pg-win2025d-qt-v2-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
         id: prepare
         timeout-minutes: 300
@@ -335,10 +335,11 @@ jobs:
         run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\libraries.ps1" -Step prepare
       # Run 44391001423 failed with MSVC C3859/C1076 on the large qrc_*.cpp sources: the system-managed
       # pagefile had grown to 19 GB (16 GB RAM) and the commit limit was used up by parallel cl.exe. A fixed
-      # 32 GB pagefile on D: is in place before the build.
-      - name: Pagefile 32 GB on D
+      # pagefile on D: is in place before the build. The first green build (run 44431677606) peaked at 29.7 GB
+      # of a 32 GB pagefile, so it is 40 GB.
+      - name: Pagefile 40 GB on D
         shell: powershell
-        run: '& "$env:PG_ROOT\ci\github-build\windows\set-pagefile.ps1" -MinimumSize 32GB -MaximumSize 32GB -DiskRoot D:'
+        run: '& "$env:PG_ROOT\ci\github-build\windows\set-pagefile.ps1" -MinimumSize 40GB -MaximumSize 40GB -DiskRoot D:'
       - name: Configure and build Release
         id: build
         timeout-minutes: 300
