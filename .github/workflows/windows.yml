@@ -55,6 +55,7 @@ env:
   # machine encodes it; cp1252 raised UnicodeEncodeError, first when printing, then when writing). UTF-8
   # mode makes both UTF-8; cmd.exe only skips those bytes inside REM lines.
   PYTHONUTF8: "1"
+  CARGO_INCREMENTAL: "0"
 
 defaults:
   run:
@@ -104,8 +105,8 @@ jobs:
             !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025d-libs-v3-none
-          restore-keys: pg-win2025d-libs-v3-
+          key: pg-win2025d-libs-v4-none
+          restore-keys: pg-win2025d-libs-v4-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -113,8 +114,8 @@ jobs:
           path: |
             ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
-          key: pg-win2025d-qt-v2-none
-          restore-keys: pg-win2025d-qt-v2-
+          key: pg-win2025d-qt-v3-none
+          restore-keys: pg-win2025d-qt-v3-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
         id: prepare
         timeout-minutes: 300
@@ -216,7 +217,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\cache_keys\*
             !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.libs_key }}
-          restore-keys: pg-win2025d-libs-v3-
+          restore-keys: pg-win2025d-libs-v4-
       - name: Restore Qt
         id: qt
         uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
@@ -225,7 +226,7 @@ jobs:
             ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
             ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
           key: ${{ needs.libraries.outputs.qt_key }}
-          restore-keys: pg-win2025d-qt-v2-
+          restore-keys: pg-win2025d-qt-v3-
       - name: Prepare libraries (stops itself at job minute 300; 50 left for trim and saves)
         id: prepare
         timeout-minutes: 300
