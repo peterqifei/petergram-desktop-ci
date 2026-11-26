@@ -23,9 +23,10 @@
 # tests/test_agent_pipe.py, tests/translate_protocol_test.py and
 # tests/update_protocol_test.py need a configured Qt build, which the runner's trimmed
 # library cache does not give; they are left out, not wired to turn a missing Qt into a
-# green result, and can still be run locally where a Qt build is installed. The test that reads out-test/Telegram.vcxproj
-# skips without a configured test build, and the manifest entries denia_filter_rule_test
-# (Qt Core) and denia_archive_cause_debug_test (needs CL=/MDd /D_DEBUG) print an explicit skip.
+# green result, and can still be run locally where a Qt build exists. The test that reads
+# out-test/Telegram.vcxproj skips without a configured test build, and the manifest entries
+# denia_filter_rule_test (Qt Core) and denia_archive_cause_debug_test (needs
+# CL=/MDd /D_DEBUG) print an explicit skip.
 name: windows-tests
 run-name: windows-tests ${{ inputs.request_id }} ${{ inputs.source_sha }}
 
@@ -116,7 +117,7 @@ jobs:
       # Ignored: the five C++ generators (the manifest runs them), test_text_eradication.py
       # (a tool that needs a store), test_text_restart_matrix.py (the cpp-logic job drives it
       # after the child exe exists), test_installer_profile_detect.py (its own step below),
-      # and the two Qt probe tests (not covered, see the header).
+      # and the four Qt probe tests (not covered, see the header).
       - name: pytest tests
         id: pytest
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
