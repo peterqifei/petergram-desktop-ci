@@ -9,8 +9,10 @@
 # the windows-only and source-root C++ manifest entries, the restart matrix and the Inno
 # Setup probe. It replaces the full runs that used to load the owner's PC (D94).
 #
-# Two jobs run in parallel: `pytest` and `cpp-logic`. No secrets, no cache of any kind:
-# the build caches in this repo sit near the 10 GB limit and a save here would evict them.
+# Two jobs run in parallel: `pytest` and `cpp-logic`. No secrets and no cache step: the suite
+# restores nothing and saves nothing, nothing in it benefits from a cache, and a save would
+# share the repo's 10 GB cache budget with the Release build's Qt and library sets (3.32 GB
+# of it in use on 2026-11-26, five caches).
 # Sources live at D:\petergram and the source-only upstream tree at D:\src (no links under
 # them: source_tree.py refuses links); temp files go to D: too, C: is small. The root must
 # be at least 8 characters: scripts/release_identity.py ignores a shorter repo root when it
@@ -19,9 +21,9 @@
 #
 # Not covered (docs/ci.md, "Windows test run"): tests/test_active_migrated_history.py,
 # tests/test_agent_pipe.py, tests/translate_protocol_test.py and
-# tests/update_protocol_test.py need a configured Qt build, which the trimmed library cache
-# does not give and which never ran on the owner's PC either; they are left out, not wired
-# to turn a missing Qt into a green result. The test that reads out-test/Telegram.vcxproj
+# tests/update_protocol_test.py need a configured Qt build, which the runner's trimmed
+# library cache does not give; they are left out, not wired to turn a missing Qt into a
+# green result, and can still be run locally where a Qt build is installed. The test that reads out-test/Telegram.vcxproj
 # skips without a configured test build, and the manifest entries denia_filter_rule_test
 # (Qt Core) and denia_archive_cause_debug_test (needs CL=/MDd /D_DEBUG) print an explicit skip.
 name: windows-tests
