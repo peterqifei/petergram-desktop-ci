@@ -17,10 +17,13 @@
 # scans a dist for an owner workdir path, so with D:\pg
 # test_portable_build_txt_with_repo_root_is_refused saw no leak (first run, 45745760812).
 #
-# Not covered (they need a configured Qt build the trimmed library cache does not give,
-# and never ran on the owner's PC either): tests/test_active_migrated_history.py,
-# tests/test_agent_pipe.py, tests/translate_protocol_test.py, tests/update_protocol_test.py.
-# They are left out, not wired to turn a missing Qt into a green result (docs/ci.md).
+# Not covered (docs/ci.md, "Windows test run"): tests/test_active_migrated_history.py,
+# tests/test_agent_pipe.py, tests/translate_protocol_test.py and
+# tests/update_protocol_test.py need a configured Qt build, which the trimmed library cache
+# does not give and which never ran on the owner's PC either; they are left out, not wired
+# to turn a missing Qt into a green result. The test that reads out-test/Telegram.vcxproj
+# skips without a configured test build, and the manifest entries denia_filter_rule_test
+# (Qt Core) and denia_archive_cause_debug_test (needs CL=/MDd /D_DEBUG) print an explicit skip.
 name: windows-tests
 run-name: windows-tests ${{ inputs.request_id }} ${{ inputs.source_sha }}
 
