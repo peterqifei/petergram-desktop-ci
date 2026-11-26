@@ -81,7 +81,7 @@ jobs:
           "TEMP=D:\tmp", "TMP=D:\tmp" | Add-Content -LiteralPath $env:GITHUB_ENV
           # The owner's checkout has core.symlinks=false; tests that build fixture repos need the same.
           git config --global core.symlinks false; if ($LASTEXITCODE) { exit 1 }
-          Write-Output "autocrlf=$(git config --show-origin --get core.autocrlf) symlinks=$(git config --show-origin --get core.symlinks)"
+          Write-Output "autocrlf=$(git config --show-scope --get core.autocrlf) symlinks=$(git config --show-scope --get core.symlinks)"
           git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
           git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
           git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
@@ -228,7 +228,7 @@ jobs:
           New-Item -ItemType Directory -Force -Path $env:OUT_DIR, 'D:\tmp' | Out-Null
           "TEMP=D:\tmp", "TMP=D:\tmp" | Add-Content -LiteralPath $env:GITHUB_ENV
           git config --global core.symlinks false; if ($LASTEXITCODE) { exit 1 }
-          Write-Output "autocrlf=$(git config --show-origin --get core.autocrlf) symlinks=$(git config --show-origin --get core.symlinks)"
+          Write-Output "autocrlf=$(git config --show-scope --get core.autocrlf) symlinks=$(git config --show-scope --get core.symlinks)"
           git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
           git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
           git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
