@@ -114,10 +114,11 @@ jobs:
       # Everything `python -m pytest tests` collects on Windows, with the same tool and stub
       # ignores as .gitlab-ci.yml overlay-tests and none of its Windows exclusions: the four
       # source-rebuild suites run here, and the Windows, pwsh and Inno branches do not skip.
-      # Ignored: the five C++ generators (the manifest runs them), test_text_eradication.py
-      # (a tool that needs a store), test_text_restart_matrix.py (the cpp-logic job drives it
-      # after the child exe exists), test_installer_profile_detect.py (its own step below),
-      # and the four Qt probe tests (not covered, see the header).
+      # Ignored: the two source-root C++ generators (the manifest runs them),
+      # test_text_eradication.py (a tool that needs a store), test_text_restart_matrix.py
+      # (the cpp-logic job drives it after the child exe exists),
+      # test_installer_profile_detect.py (its own step below), and the four Qt probe tests
+      # (not covered, see the header).
       - name: pytest tests
         id: pytest
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
@@ -133,11 +134,8 @@ jobs:
             '--ignore=tests/test_installer_profile_detect.py',
             '--ignore=tests/test_text_eradication.py',
             '--ignore=tests/test_text_restart_matrix.py',
-            '--ignore=tests/test_d26_lifecycle.py',
-            '--ignore=tests/test_peer_clear_staging.py',
             '--ignore=tests/test_stories_mark_read.py',
             '--ignore=tests/test_translate_provider_cache.py',
-            '--ignore=tests/test_viewer_cleanup_lifetime.py',
             '--ignore=tests/test_active_migrated_history.py',
             '--ignore=tests/test_agent_pipe.py',
             '--ignore=tests/translate_protocol_test.py',
