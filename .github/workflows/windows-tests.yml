@@ -11,8 +11,11 @@
 #
 # Two jobs run in parallel: `pytest` and `cpp-logic`. No secrets, no cache of any kind:
 # the build caches in this repo sit near the 10 GB limit and a save here would evict them.
-# Sources live at D:\pg and the source-only upstream tree at D:\src (short paths, no links
-# under them: source_tree.py refuses links); temp files go to D: too, C: is small.
+# Sources live at D:\petergram and the source-only upstream tree at D:\src (no links under
+# them: source_tree.py refuses links); temp files go to D: too, C: is small. The root must
+# be at least 8 characters: scripts/release_identity.py ignores a shorter repo root when it
+# scans a dist for an owner workdir path, so with D:\pg
+# test_portable_build_txt_with_repo_root_is_refused saw no leak (first run, 45745760812).
 #
 # Not covered (they need a configured Qt build the trimmed library cache does not give,
 # and never ran on the owner's PC either): tests/test_active_migrated_history.py,
@@ -45,7 +48,7 @@ env:
   SOURCE_URL: https://gitlab.com/my-denia-group/Petergram.git
   SOURCE_SHA: ${{ inputs.source_sha }}
   REQUEST_ID: ${{ inputs.request_id }}
-  PG_ROOT: D:\pg
+  PG_ROOT: D:\petergram
   PG_SRC: D:\src
   OUT_DIR: D:\out
   GIT_AUTHOR_NAME: petergram-ci
@@ -95,7 +98,7 @@ jobs:
           python -m pytest --version
       - name: Source-only upstream tree (for the vendor-mode contracts)
         id: tree
-        working-directory: D:\pg
+        working-directory: D:\petergram
         run: |
           $t0 = Get-Date
           python scripts\source_tree.py --root $env:PG_ROOT --vendor $env:PG_SRC --source-only bootstrap
@@ -113,7 +116,7 @@ jobs:
         id: pytest
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
         timeout-minutes: 70
-        working-directory: D:\pg
+        working-directory: D:\petergram
         env:
           PETERGRAM_VENDOR: D:\src
         run: |
@@ -134,7 +137,7 @@ jobs:
             '--ignore=tests/translate_protocol_test.py',
             '--ignore=tests/update_protocol_test.py'
           )
-          python -m pytest @pytestArgs
+          python -m pytest @pytestArgs 2>&1 | Tee-Object -FilePath "$env:OUT_DIR\pytest.log"
           $code = $LASTEXITCODE
           "pytest $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
           exit $code
@@ -142,7 +145,7 @@ jobs:
         id: installer
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
         timeout-minutes: 20
-        working-directory: D:\pg
+        working-directory: D:\petergram
         run: |
           $t0 = Get-Date
           $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
@@ -179,17 +182,19 @@ jobs:
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
-          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line }
+          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line; Write-Output "summary: $Line" }
           Add-Summary "## windows-tests pytest job, $($env:SOURCE_SHA.Substring(0, 12))"
+          $plog = Join-Path $env:OUT_DIR 'pytest.log'
+          if (Test-Path -LiteralPath $plog) { Add-Summary "- pytest tests: $(Get-Content -LiteralPath $plog -Tail 1)" }
           foreach ($f in 'pytest.xml', 'installer.xml') {
             $p = Join-Path $env:OUT_DIR $f
             if (-not (Test-Path -LiteralPath $p)) { Add-Summary "- $f : no report"; continue }
             $x = [xml](Get-Content -LiteralPath $p -Raw)
-            $total = $x.SelectNodes('//testcase').Count
-            $failed = $x.SelectNodes('//testcase[failure]').Count
-            $errors = $x.SelectNodes('//testcase[error]').Count
+            $failed = @($x.SelectNodes('//testcase[failure]'))
+            $errors = @($x.SelectNodes('//testcase[error]'))
             $skipped = @($x.SelectNodes('//testcase[skipped]'))
-            Add-Summary ("- $f : {0} tests, {1} passed, {2} failed, {3} errors, {4} skipped" -f $total, ($total - $failed - $errors - $skipped.Count), $failed, $errors, $skipped.Count)
+            Add-Summary ("- $f : {0} failed, {1} errors, {2} skipped" -f $failed.Count, $errors.Count, $skipped.Count)
+            foreach ($c in ($failed + $errors)) { Add-Summary "  - $($c.classname)::$($c.name)" }
             foreach ($g in ($skipped | Group-Object { [string]$_.skipped.message } | Sort-Object Count -Descending)) {
               Add-Summary ("  - skipped {0}: {1}" -f $g.Count, $g.Name)
             }
@@ -234,7 +239,7 @@ jobs:
           python-version: "3.13"
       - name: Source-only upstream tree (the source_root manifest entries)
         id: tree
-        working-directory: D:\pg
+        working-directory: D:\petergram
         run: |
           $t0 = Get-Date
           python --version
@@ -243,7 +248,7 @@ jobs:
           "source_tree_bootstrap $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
           exit $code
       - name: Toolchain
-        working-directory: D:\pg
+        working-directory: D:\petergram
         run: |
           Write-Output "image=$($env:ImageOS) $($env:ImageVersion)"
           Write-Output "cpu_logical=$([Environment]::ProcessorCount)"
@@ -263,7 +268,7 @@ jobs:
         id: cpp
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
         timeout-minutes: 60
-        working-directory: D:\pg
+        working-directory: D:\petergram
         run: |
           $t0 = Get-Date
           pwsh -NoProfile -File scripts\test-cpp-logic.ps1 -SourceRoot $env:PG_SRC 2>&1 | Tee-Object -FilePath "$env:OUT_DIR\cpp-logic.log"
@@ -277,7 +282,7 @@ jobs:
         id: matrix
         if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
         timeout-minutes: 30
-        working-directory: D:\pg
+        working-directory: D:\petergram
         run: |
           $t0 = Get-Date
           $exe = Join-Path $env:PG_ROOT 'artifacts\cpp-logic\denia_text_restart_child_test.exe'
@@ -289,7 +294,7 @@ jobs:
       - name: Summary
         if: ${{ !cancelled() }}
         run: |
-          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line }
+          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line; Write-Output "summary: $Line" }
           Add-Summary "## windows-tests cpp-logic job, $($env:SOURCE_SHA.Substring(0, 12))"
           $log = Join-Path $env:OUT_DIR 'cpp-logic.log'
           if (Test-Path -LiteralPath $log) {
