@@ -1,0 +1,321 @@
+# Canonical copy. scripts/github-test.ps1 syncs it to .github/workflows/windows-tests.yml
+# on main of the build-only repo peterqifei/petergram-desktop-ci (D83, D94); this tree
+# itself never carries .github. The runner fetches the exact commit from public GitLab
+# and runs only entrypoints that exist on that commit: pytest, scripts/test-cpp-logic.ps1,
+# scripts/source_tree.py and scripts/resolve-toolchain.ps1. Nothing here is read from
+# ci/github-build/windows/, so a commit older than this file can be tested.
+#
+# The suite is what GitLab Linux CI cannot run: the Windows branches of the Python tests,
+# the windows-only and source-root C++ manifest entries, the restart matrix and the Inno
+# Setup probe. It replaces the full runs that used to load the owner's PC (D94).
+#
+# Two jobs run in parallel: `pytest` and `cpp-logic`. No secrets, no cache of any kind:
+# the build caches in this repo sit near the 10 GB limit and a save here would evict them.
+# Sources live at D:\pg and the source-only upstream tree at D:\src (short paths, no links
+# under them: source_tree.py refuses links); temp files go to D: too, C: is small.
+#
+# Not covered (they need a configured Qt build the trimmed library cache does not give,
+# and never ran on the owner's PC either): tests/test_active_migrated_history.py,
+# tests/test_agent_pipe.py, tests/translate_protocol_test.py, tests/update_protocol_test.py.
+# They are left out, not wired to turn a missing Qt into a green result (docs/ci.md).
+name: windows-tests
+run-name: windows-tests ${{ inputs.request_id }} ${{ inputs.source_sha }}
+
+on:
+  workflow_dispatch:
+    inputs:
+      source_sha:
+        description: Exact 40-hex Petergram commit on gitlab.com
+        required: true
+        type: string
+      request_id:
+        description: Caller request id, matched in the run title
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Own group, never the build's windows-<sha>: a test run must not queue behind a Release build.
+concurrency:
+  group: windows-tests-${{ inputs.source_sha }}
+  cancel-in-progress: false
+
+env:
+  SOURCE_URL: https://gitlab.com/my-denia-group/Petergram.git
+  SOURCE_SHA: ${{ inputs.source_sha }}
+  REQUEST_ID: ${{ inputs.request_id }}
+  PG_ROOT: D:\pg
+  PG_SRC: D:\src
+  OUT_DIR: D:\out
+  GIT_AUTHOR_NAME: petergram-ci
+  GIT_AUTHOR_EMAIL: ci@example.invalid
+  GIT_COMMITTER_NAME: petergram-ci
+  GIT_COMMITTER_EMAIL: ci@example.invalid
+  PYTHONUNBUFFERED: "1"
+  # The runner's code page is cp1252; the repo's scripts and tests read and write UTF-8 text.
+  PYTHONUTF8: "1"
+  PYTHONDONTWRITEBYTECODE: "1"
+
+defaults:
+  run:
+    shell: pwsh
+
+jobs:
+  pytest:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Fetch exact source from GitLab
+        id: fetch
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be 40 lowercase hex' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
+          New-Item -ItemType Directory -Force -Path $env:OUT_DIR, 'D:\tmp' | Out-Null
+          "TEMP=D:\tmp", "TMP=D:\tmp" | Add-Content -LiteralPath $env:GITHUB_ENV
+          # The owner's checkout has core.symlinks=false; tests that build fixture repos need the same.
+          git config --global core.symlinks false; if ($LASTEXITCODE) { exit 1 }
+          Write-Output "autocrlf=$(git config --show-origin --get core.autocrlf) symlinks=$(git config --show-origin --get core.symlinks)"
+          git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT checkout --quiet --detach FETCH_HEAD; if ($LASTEXITCODE) { exit 1 }
+          $head = git -C $env:PG_ROOT rev-parse HEAD
+          if ($head -cne $env:SOURCE_SHA) { throw "fetched $head, expected $env:SOURCE_SHA" }
+          Write-Output "source_sha=$head"
+      - name: Python 3.13 (as .gitlab-ci.yml)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Install test dependencies
+        run: |
+          python --version
+          python -m pip install --quiet --disable-pip-version-check pytest cryptography pyyaml
+          if ($LASTEXITCODE) { exit 1 }
+          python -m pytest --version
+      - name: Source-only upstream tree (for the vendor-mode contracts)
+        id: tree
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          python scripts\source_tree.py --root $env:PG_ROOT --vendor $env:PG_SRC --source-only bootstrap
+          $code = $LASTEXITCODE
+          "source_tree_bootstrap $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      # Everything `python -m pytest tests` collects on Windows, with the same tool and stub
+      # ignores as .gitlab-ci.yml overlay-tests and none of its Windows exclusions: the four
+      # source-rebuild suites run here, and the Windows, pwsh and Inno branches do not skip.
+      # Ignored: the five C++ generators (the manifest runs them), test_text_eradication.py
+      # (a tool that needs a store), test_text_restart_matrix.py (the cpp-logic job drives it
+      # after the child exe exists), test_installer_profile_detect.py (its own step below),
+      # and the two Qt probe tests (not covered, see the header).
+      - name: pytest tests
+        id: pytest
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        timeout-minutes: 70
+        working-directory: D:\pg
+        env:
+          PETERGRAM_VENDOR: D:\src
+        run: |
+          $t0 = Get-Date
+          $pytestArgs = @(
+            'tests', '-q', '-rs', '--tb=short', '--durations=15', '-p', 'no:cacheprovider',
+            '--basetemp', 'D:\pt', '--junitxml', "$env:OUT_DIR\pytest.xml",
+            '--ignore=tests/test_installer_profile_detect.py',
+            '--ignore=tests/test_text_eradication.py',
+            '--ignore=tests/test_text_restart_matrix.py',
+            '--ignore=tests/test_d26_lifecycle.py',
+            '--ignore=tests/test_peer_clear_staging.py',
+            '--ignore=tests/test_stories_mark_read.py',
+            '--ignore=tests/test_translate_provider_cache.py',
+            '--ignore=tests/test_viewer_cleanup_lifetime.py',
+            '--ignore=tests/test_active_migrated_history.py',
+            '--ignore=tests/test_agent_pipe.py',
+            '--ignore=tests/translate_protocol_test.py',
+            '--ignore=tests/update_protocol_test.py'
+          )
+          python -m pytest @pytestArgs
+          $code = $LASTEXITCODE
+          "pytest $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      - name: Inno Setup probe (must run, not skip)
+        id: installer
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        timeout-minutes: 20
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          $iscc = "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe"
+          if (-not (Test-Path -LiteralPath $iscc)) { throw "Inno Setup 6 ISCC.exe is not on this image ($iscc); the installer test would skip" }
+          $env:PETTERGRAM_ISCC = $iscc
+          python -m pytest tests/test_installer_profile_detect.py -q -rs --tb=short --durations=5 -p no:cacheprovider --basetemp D:\pt-iss --junitxml "$env:OUT_DIR\installer.xml"
+          $code = $LASTEXITCODE
+          "installer $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          if ($code -eq 0) {
+            $x = [xml](Get-Content -LiteralPath "$env:OUT_DIR\installer.xml" -Raw)
+            $n = $x.SelectNodes('//testcase').Count
+            $s = $x.SelectNodes('//testcase[skipped]').Count
+            if ($n -eq 0 -or $s -gt 0) { throw "installer probe ran $n tests with $s skipped" }
+          }
+          exit $code
+      - name: Fail on a skipped Windows test
+        id: skips
+        if: ${{ !cancelled() && steps.pytest.conclusion != 'skipped' }}
+        run: |
+          # A Windows, pwsh, PowerShell or Inno skip means the test did not run where it must.
+          $bad = @()
+          foreach ($f in 'pytest.xml', 'installer.xml') {
+            $p = Join-Path $env:OUT_DIR $f
+            if (-not (Test-Path -LiteralPath $p)) { continue }
+            $x = [xml](Get-Content -LiteralPath $p -Raw)
+            foreach ($c in $x.SelectNodes('//testcase[skipped]')) {
+              if ([string]$c.skipped.message -match 'Windows|pwsh|PowerShell|Inno|ISCC') {
+                $bad += "$($c.classname)::$($c.name): $($c.skipped.message)"
+              }
+            }
+          }
+          if ($bad.Count) { $bad | ForEach-Object { Write-Output "windows_skip=$_" }; throw "$($bad.Count) Windows test(s) skipped" }
+          Write-Output 'windows_skips=none'
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line }
+          Add-Summary "## windows-tests pytest job, $($env:SOURCE_SHA.Substring(0, 12))"
+          foreach ($f in 'pytest.xml', 'installer.xml') {
+            $p = Join-Path $env:OUT_DIR $f
+            if (-not (Test-Path -LiteralPath $p)) { Add-Summary "- $f : no report"; continue }
+            $x = [xml](Get-Content -LiteralPath $p -Raw)
+            $total = $x.SelectNodes('//testcase').Count
+            $failed = $x.SelectNodes('//testcase[failure]').Count
+            $errors = $x.SelectNodes('//testcase[error]').Count
+            $skipped = @($x.SelectNodes('//testcase[skipped]'))
+            Add-Summary ("- $f : {0} tests, {1} passed, {2} failed, {3} errors, {4} skipped" -f $total, ($total - $failed - $errors - $skipped.Count), $failed, $errors, $skipped.Count)
+            foreach ($g in ($skipped | Group-Object { [string]$_.skipped.message } | Sort-Object Count -Descending)) {
+              Add-Summary ("  - skipped {0}: {1}" -f $g.Count, $g.Name)
+            }
+          }
+          $timings = Join-Path $env:OUT_DIR 'timings.txt'
+          if (Test-Path -LiteralPath $timings) {
+            Add-Summary 'Step durations (seconds):'
+            Get-Content -LiteralPath $timings | ForEach-Object { Add-Summary "- $_" }
+          }
+      - name: Upload reports
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-tests-pytest-${{ inputs.source_sha }}
+          path: D:\out
+          if-no-files-found: warn
+          retention-days: 3
+
+  cpp-logic:
+    runs-on: windows-2025
+    timeout-minutes: 90
+    steps:
+      - name: Fetch exact source from GitLab
+        id: fetch
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be 40 lowercase hex' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
+          New-Item -ItemType Directory -Force -Path $env:OUT_DIR, 'D:\tmp' | Out-Null
+          "TEMP=D:\tmp", "TMP=D:\tmp" | Add-Content -LiteralPath $env:GITHUB_ENV
+          git config --global core.symlinks false; if ($LASTEXITCODE) { exit 1 }
+          Write-Output "autocrlf=$(git config --show-origin --get core.autocrlf) symlinks=$(git config --show-origin --get core.symlinks)"
+          git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT checkout --quiet --detach FETCH_HEAD; if ($LASTEXITCODE) { exit 1 }
+          $head = git -C $env:PG_ROOT rev-parse HEAD
+          if ($head -cne $env:SOURCE_SHA) { throw "fetched $head, expected $env:SOURCE_SHA" }
+          Write-Output "source_sha=$head"
+      - name: Python 3.13 (as .gitlab-ci.yml)
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Source-only upstream tree (the source_root manifest entries)
+        id: tree
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          python --version
+          python scripts\source_tree.py --root $env:PG_ROOT --vendor $env:PG_SRC --source-only bootstrap
+          $code = $LASTEXITCODE
+          "source_tree_bootstrap $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      - name: Toolchain
+        working-directory: D:\pg
+        run: |
+          Write-Output "image=$($env:ImageOS) $($env:ImageVersion)"
+          Write-Output "cpu_logical=$([Environment]::ProcessorCount)"
+          Get-PSDrive -PSProvider FileSystem | Where-Object { $_.Used -ne $null } | ForEach-Object {
+            Write-Output ('disk {0}: free_gb={1:N1}' -f $_.Name, ($_.Free / 1GB))
+          }
+          . .\scripts\resolve-toolchain.ps1
+          $tc = Resolve-DeniaToolchain
+          Write-Output "vcvars_ver=$($tc.VcvarsVer) windows_sdk=$($tc.WinSdk) present=$($tc.WinSdkOk)"
+          $banner = & cmd.exe /d /c "call `"$($tc.Vcvars)`" -vcvars_ver=$($tc.VcvarsVer) >nul && cl 2>&1"
+          Write-Output "cl=$(($banner | Select-String 'Version' | Select-Object -First 1).Line.Trim())"
+      # The full manifest through the MSVC front: the platform=all entries, the windows-only
+      # entries (archive suites, secure store, file cipher, text restart child, ...) and the
+      # source_root entries against the source-only tree. cpp_logic_tests must end `ok`:
+      # `partial` means a source_root entry was skipped.
+      - name: Standalone C++ logic tests (full manifest)
+        id: cpp
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        timeout-minutes: 60
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          pwsh -NoProfile -File scripts\test-cpp-logic.ps1 -SourceRoot $env:PG_SRC 2>&1 | Tee-Object -FilePath "$env:OUT_DIR\cpp-logic.log"
+          $code = $LASTEXITCODE
+          "cpp_logic $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          if ($code -eq 0 -and -not (Select-String -LiteralPath "$env:OUT_DIR\cpp-logic.log" -Pattern '^cpp_logic_tests=ok$' -Quiet)) {
+            throw 'cpp_logic_tests=ok was not printed (partial or missing)'
+          }
+          exit $code
+      - name: Text restart matrix (needs the child exe the step above built)
+        id: matrix
+        if: ${{ !cancelled() && steps.tree.conclusion == 'success' }}
+        timeout-minutes: 30
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          $exe = Join-Path $env:PG_ROOT 'artifacts\cpp-logic\denia_text_restart_child_test.exe'
+          if (-not (Test-Path -LiteralPath $exe)) { throw "child exe missing ($exe): the C++ logic step did not build it" }
+          python tests\test_text_restart_matrix.py --cycles 20 --with-negative-controls --artifacts "$env:OUT_DIR\matrix" 2>&1 | Tee-Object -FilePath "$env:OUT_DIR\matrix.log"
+          $code = $LASTEXITCODE
+          "restart_matrix $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      - name: Summary
+        if: ${{ !cancelled() }}
+        run: |
+          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line }
+          Add-Summary "## windows-tests cpp-logic job, $($env:SOURCE_SHA.Substring(0, 12))"
+          $log = Join-Path $env:OUT_DIR 'cpp-logic.log'
+          if (Test-Path -LiteralPath $log) {
+            $lines = Get-Content -LiteralPath $log
+            $compiled = @($lines | Where-Object { $_ -match '^compile=' }).Count
+            $skips = @($lines | Where-Object { $_ -match '^skip=' })
+            $gen = @($lines | Where-Object { $_ -match '^generate=' }).Count
+            Add-Summary "- C++ logic: $compiled compiled, $gen generated, $($skips.Count) skipped, result $(($lines | Where-Object { $_ -match '^cpp_logic_tests=' }) -join ',')"
+            $skips | ForEach-Object { Add-Summary "  - $_" }
+          } else {
+            Add-Summary '- C++ logic: no log'
+          }
+          $matrix = Join-Path $env:OUT_DIR 'matrix.log'
+          if (Test-Path -LiteralPath $matrix) { Add-Summary "- restart matrix: $(Get-Content -LiteralPath $matrix -Tail 1)" } else { Add-Summary '- restart matrix: no log' }
+          $timings = Join-Path $env:OUT_DIR 'timings.txt'
+          if (Test-Path -LiteralPath $timings) {
+            Add-Summary 'Step durations (seconds):'
+            Get-Content -LiteralPath $timings | ForEach-Object { Add-Summary "- $_" }
+          }
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-tests-cpp-${{ inputs.source_sha }}
+          path: |
+            D:\out\*.log
+            D:\out\timings.txt
+          if-no-files-found: warn
+          retention-days: 3
