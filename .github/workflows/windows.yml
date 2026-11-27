@@ -51,7 +51,7 @@ env:
   GIT_COMMITTER_EMAIL: ci@example.invalid
   PYTHONUNBUFFERED: "1"
   # The runner's code page is cp1252. prepare.py prints each command list and writes it to a .bat in the
-  # locale encoding, and the ffmpeg stage's list carries Chinese text in a REM comment (the owner's cp936
+  # locale encoding, and the ffmpeg stage's list carries Chinese text in a REM comment (a local cp936
   # machine encodes it; cp1252 raised UnicodeEncodeError, first when printing, then when writing). UTF-8
   # mode makes both UTF-8; cmd.exe only skips those bytes inside REM lines.
   PYTHONUTF8: "1"
