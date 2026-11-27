@@ -9,15 +9,19 @@
 # the windows-only and source-root C++ manifest entries, the restart matrix and the Inno
 # Setup probe. It replaces the full runs that used to load local developer machines (D94).
 #
-# Two jobs run in parallel: `pytest` and `cpp-logic`. No secrets and no cache step: the suite
-# restores nothing and saves nothing, nothing in it benefits from a cache, and a save would
-# share the repo's 10 GB cache budget with the Release build's Qt and library sets (3.32 GB
-# of it in use on 2026-11-26, five caches).
-# Sources live at D:\petergram and the source-only upstream tree at D:\src (no links under
+# Three jobs run in parallel: `pytest`, `cpp-logic`, and `seam-preflight`.
+# `pytest` and `cpp-logic` use no secrets and no cache step.
+# `seam-preflight` restores the existing `pg-win2025d-*` dependency caches read-only via
+# `actions/cache/restore` (never calls `save`, zero shared 10 GB cache quota impact) to run
+# `configure-test.ps1` (`TDESKTOP_API_TEST=ON`), build only the minimal codegen header
+# targets, and check all gated `overlay/denia/` translation units with `cl /Zs` (no `.obj`).
+# Sources for `pytest` and `cpp-logic` live at D:\petergram and D:\src (no links under
 # them: source_tree.py refuses links); temp files go to D: too, C: is small. The root must
 # be at least 8 characters: scripts/release_identity.py ignores a shorter repo root when it
 # scans a dist for an owner workdir path, so with D:\pg
 # test_portable_build_txt_with_repo_root_is_refused saw no leak (first run, 45745760812).
+# `seam-preflight` uses D:\pg (matching `windows.yml` cache keys) and does not run
+# `release_identity.py`.
 #
 # Not covered (docs/ci.md, "Windows test run"): tests/test_active_migrated_history.py,
 # tests/test_agent_pipe.py, tests/translate_protocol_test.py and
@@ -326,5 +330,189 @@ jobs:
           path: |
             D:\out\*.log
             D:\out\timings.txt
+          if-no-files-found: warn
+          retention-days: 3
+
+  seam-preflight:
+    runs-on: windows-2025
+    timeout-minutes: 60
+    env:
+      PG_ROOT: D:\pg
+    steps:
+      - name: Fetch exact source from GitLab
+        id: fetch
+        run: |
+          if ($env:SOURCE_SHA -cnotmatch '^[0-9a-f]{40}$') { throw 'source_sha must be 40 lowercase hex' }
+          if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
+          New-Item -ItemType Directory -Force -Path $env:OUT_DIR, 'D:\tmp' | Out-Null
+          "TEMP=D:\tmp", "TMP=D:\tmp" | Add-Content -LiteralPath $env:GITHUB_ENV
+          git config --global core.symlinks false; if ($LASTEXITCODE) { exit 1 }
+          git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT remote add origin $env:SOURCE_URL; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT fetch --quiet --depth=1 origin $env:SOURCE_SHA; if ($LASTEXITCODE) { exit 1 }
+          git -C $env:PG_ROOT checkout --quiet --detach FETCH_HEAD; if ($LASTEXITCODE) { exit 1 }
+          $head = git -C $env:PG_ROOT rev-parse HEAD
+          if ($head -cne $env:SOURCE_SHA) { throw "fetched $head, expected $env:SOURCE_SHA" }
+          $link = Join-Path $env:GITHUB_WORKSPACE 'pg'
+          New-Item -ItemType SymbolicLink -Path $link -Target $env:PG_ROOT | Out-Null
+          "CACHE_LIBS=$link\vendor\Libraries\win64" | Add-Content -LiteralPath $env:GITHUB_ENV
+          "CACHE_THIRDPARTY=$link\vendor\ThirdParty" | Add-Content -LiteralPath $env:GITHUB_ENV
+          Write-Output "source_sha=$head"
+      - name: Check seam preflight script availability
+        id: script_check
+        run: |
+          $hasScript = Test-Path -LiteralPath (Join-Path $env:PG_ROOT 'scripts\preflight-api-test-seams.ps1') -PathType Leaf
+          "available=$($hasScript.ToString().ToLowerInvariant())" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+          if (-not $hasScript) {
+            $reason = "missing scripts/preflight-api-test-seams.ps1 at $($env:SOURCE_SHA.Substring(0, 12))"
+            "skip_reason=$reason" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+            Write-Output "seam_preflight=skipped reason=$reason"
+          } else {
+            Write-Output 'seam_preflight_script=present'
+          }
+      - name: Python 3.13 (as .gitlab-ci.yml)
+        if: ${{ steps.script_check.outputs.available == 'true' }}
+        uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7.1.0
+        with:
+          python-version: "3.13"
+      - name: Bootstrap vendor source
+        id: tree
+        if: ${{ steps.script_check.outputs.available == 'true' }}
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          if (Get-Command nuget -ErrorAction SilentlyContinue) {
+            & nuget sources Disable -Name 'Microsoft Visual Studio Offline Packages' 2>&1 | Out-Null
+            & nuget sources Add -Source 'https://api.nuget.org/v3/index.json' 2>&1 | Out-Null
+          }
+          $global:LASTEXITCODE = 0
+          python scripts\source_tree.py bootstrap --root $env:PG_ROOT
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          python scripts\source_tree.py verify --root $env:PG_ROOT --require-submodules | Out-Null
+          $code = $LASTEXITCODE
+          "source_tree_bootstrap $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      - name: Restore ThirdParty (read-only)
+        id: tp
+        if: ${{ steps.script_check.outputs.available == 'true' && steps.tree.conclusion == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ${{ env.CACHE_THIRDPARTY }}
+          key: pg-win2025d-tp-v1-none
+          restore-keys: pg-win2025d-tp-v1-
+      - name: Restore Libraries (read-only)
+        id: libs
+        if: ${{ steps.script_check.outputs.available == 'true' && steps.tree.conclusion == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\*
+            !${{ env.CACHE_LIBS }}\cache_keys
+            !${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\*
+            !${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: pg-win2025d-libs-v4-none
+          restore-keys: pg-win2025d-libs-v4-
+      - name: Restore Qt (read-only)
+        id: qt
+        if: ${{ steps.script_check.outputs.available == 'true' && steps.tree.conclusion == 'success' }}
+        uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: |
+            ${{ env.CACHE_LIBS }}\[qQ]t[_-]*
+            ${{ env.CACHE_LIBS }}\cache_keys\[qQ]t[_-]*
+          key: pg-win2025d-qt-v3-none
+          restore-keys: pg-win2025d-qt-v3-
+      - name: Verify restored dependency caches
+        id: caches
+        if: ${{ steps.script_check.outputs.available == 'true' && steps.tree.conclusion == 'success' }}
+        working-directory: D:\pg
+        env:
+          MATCHED_TP: ${{ steps.tp.outputs.cache-matched-key }}
+          MATCHED_LIBS: ${{ steps.libs.outputs.cache-matched-key }}
+          MATCHED_QT: ${{ steps.qt.outputs.cache-matched-key }}
+        run: |
+          if (-not $env:MATCHED_TP -or -not $env:MATCHED_LIBS -or -not $env:MATCHED_QT) {
+            $reason = "dependency cache miss (tp='$env:MATCHED_TP', libs='$env:MATCHED_LIBS', qt='$env:MATCHED_QT')"
+            "ready=false" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+            "skip_reason=$reason" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+            Write-Output "seam_preflight=skipped reason=$reason"
+            exit 0
+          }
+          . .\scripts\resolve-toolchain.ps1
+          $qtPrefix = Get-DeniaQtPrefix -Root $env:PG_ROOT
+          if (-not $qtPrefix) {
+            $reason = "qt prefix missing after cache restore under $env:PG_ROOT\vendor\Libraries\win64"
+            "ready=false" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+            "skip_reason=$reason" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+            Write-Output "seam_preflight=skipped reason=$reason"
+            exit 0
+          }
+          "ready=true" | Add-Content -LiteralPath $env:GITHUB_OUTPUT -Encoding utf8
+          Write-Output "restored_tp=$env:MATCHED_TP"
+          Write-Output "restored_libs=$env:MATCHED_LIBS"
+          Write-Output "restored_qt=$env:MATCHED_QT"
+          Write-Output "qt_prefix=$qtPrefix"
+      - name: Configure test build (TDESKTOP_API_TEST=ON)
+        id: configure
+        if: ${{ !cancelled() && steps.caches.outputs.ready == 'true' }}
+        timeout-minutes: 15
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          pwsh -NoProfile -File scripts\configure-test.ps1 2>&1 | Tee-Object -FilePath "$env:OUT_DIR\configure-test.log"
+          $code = $LASTEXITCODE
+          "configure_test $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      - name: Preflight API-test and memory-report seams
+        id: preflight
+        if: ${{ !cancelled() && steps.configure.conclusion == 'success' }}
+        timeout-minutes: 30
+        working-directory: D:\pg
+        run: |
+          $t0 = Get-Date
+          pwsh -NoProfile -File scripts\preflight-api-test-seams.ps1 2>&1 | Tee-Object -FilePath "$env:OUT_DIR\seam-preflight.log"
+          $code = $LASTEXITCODE
+          "seam_preflight $([int]((Get-Date) - $t0).TotalSeconds)" | Add-Content -LiteralPath "$env:OUT_DIR\timings.txt"
+          exit $code
+      - name: Summary
+        if: ${{ !cancelled() }}
+        env:
+          SCRIPT_AVAILABLE: ${{ steps.script_check.outputs.available }}
+          SCRIPT_SKIP_REASON: ${{ steps.script_check.outputs.skip_reason }}
+          CACHE_READY: ${{ steps.caches.outputs.ready }}
+          CACHE_SKIP_REASON: ${{ steps.caches.outputs.skip_reason }}
+        run: |
+          function Add-Summary([string]$Line) { Add-Content -LiteralPath $env:GITHUB_STEP_SUMMARY -Value $Line; Write-Output "summary: $Line" }
+          Add-Summary "## windows-tests seam-preflight job, $($env:SOURCE_SHA.Substring(0, 12))"
+          if ($env:SCRIPT_AVAILABLE -ne 'true') {
+            Add-Summary "seam-preflight: skipped (reason=$($env:SCRIPT_SKIP_REASON))"
+          } elseif ($env:CACHE_READY -ne 'true') {
+            Add-Summary "seam-preflight: skipped (reason=$($env:CACHE_SKIP_REASON))"
+          } else {
+            $log = Join-Path $env:OUT_DIR 'seam-preflight.log'
+            if (Test-Path -LiteralPath $log) {
+              $lines = Get-Content -LiteralPath $log
+              foreach ($b in ($lines | Where-Object { $_ -match '^(?:batch=|seam_preflight=|codegen_seconds=)' })) {
+                Add-Summary "- $b"
+              }
+            } else {
+              Add-Summary '- seam-preflight: no log'
+            }
+          }
+          $timings = Join-Path $env:OUT_DIR 'timings.txt'
+          if (Test-Path -LiteralPath $timings) {
+            Add-Summary 'Step durations (seconds):'
+            Get-Content -LiteralPath $timings | ForEach-Object { Add-Summary "- $_" }
+          }
+      - name: Upload logs
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: windows-tests-seam-preflight-${{ inputs.source_sha }}
+          path: |
+            D:\out\*.log
+            D:\out\timings.txt
+            D:\pg\artifacts\api-test-seam-preflight\*.log
           if-no-files-found: warn
           retention-days: 3
