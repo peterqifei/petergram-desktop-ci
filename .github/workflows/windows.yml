@@ -352,6 +352,9 @@ jobs:
           BUILD_REPOSITORY: ${{ github.repository }}
           WORKFLOW_REF: ${{ github.workflow_ref }}
         run: pwsh -NoProfile -File "$env:PG_ROOT\ci\github-build\windows\build.ps1"
+      - name: Preflight API-test and memory-report seams
+        id: preflight
+        run: pwsh -NoProfile -File "$env:PG_ROOT\scripts\preflight-api-test-seams.ps1" -OutDir "$env:PG_ROOT\vendor\tdesktop\out-release" -SkipCodegen
       - name: Upload Release payload
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
