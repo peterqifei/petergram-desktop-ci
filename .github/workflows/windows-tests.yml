@@ -7,7 +7,7 @@
 #
 # The suite is what GitLab Linux CI cannot run: the Windows branches of the Python tests,
 # the windows-only and source-root C++ manifest entries, the restart matrix and the Inno
-# Setup probe. It replaces the full runs that used to load the owner's PC (D94).
+# Setup probe. It replaces the full runs that used to load local developer machines (D94).
 #
 # Two jobs run in parallel: `pytest` and `cpp-logic`. No secrets and no cache step: the suite
 # restores nothing and saves nothing, nothing in it benefits from a cache, and a save would
@@ -82,7 +82,7 @@ jobs:
           if ($env:REQUEST_ID -cnotmatch '^[A-Za-z0-9._-]{1,80}$') { throw 'request_id must match [A-Za-z0-9._-]{1,80}' }
           New-Item -ItemType Directory -Force -Path $env:OUT_DIR, 'D:\tmp' | Out-Null
           "TEMP=D:\tmp", "TMP=D:\tmp" | Add-Content -LiteralPath $env:GITHUB_ENV
-          # The owner's checkout has core.symlinks=false; tests that build fixture repos need the same.
+          # Local Windows checkouts keep core.symlinks=false; tests that build fixture repos need the same.
           git config --global core.symlinks false; if ($LASTEXITCODE) { exit 1 }
           Write-Output "autocrlf=$(git config --show-scope --get core.autocrlf) symlinks=$(git config --show-scope --get core.symlinks)"
           git init --quiet $env:PG_ROOT; if ($LASTEXITCODE) { exit 1 }
