@@ -505,14 +505,31 @@ jobs:
             Add-Summary 'Step durations (seconds):'
             Get-Content -LiteralPath $timings | ForEach-Object { Add-Summary "- $_" }
           }
+      - name: Stage logs
+        id: stage_logs
+        if: ${{ !cancelled() }}
+        run: |
+          $stage = Join-Path $env:OUT_DIR 'seam-logs'
+          $seamStage = Join-Path $stage 'api-test-seam-preflight'
+          New-Item -ItemType Directory -Force -Path $stage, $seamStage | Out-Null
+          if (Test-Path -LiteralPath $env:OUT_DIR) {
+            Get-ChildItem -LiteralPath $env:OUT_DIR -Filter '*.log' -File -ErrorAction SilentlyContinue |
+              Copy-Item -Destination $stage -Force
+            $timings = Join-Path $env:OUT_DIR 'timings.txt'
+            if (Test-Path -LiteralPath $timings -PathType Leaf) {
+              Copy-Item -LiteralPath $timings -Destination $stage -Force
+            }
+          }
+          $seamDir = Join-Path $env:PG_ROOT 'artifacts\api-test-seam-preflight'
+          if (Test-Path -LiteralPath $seamDir -PathType Container) {
+            Get-ChildItem -LiteralPath $seamDir -Filter '*.log' -File -ErrorAction SilentlyContinue |
+              Copy-Item -Destination $seamStage -Force
+          }
       - name: Upload logs
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: windows-tests-seam-preflight-${{ inputs.source_sha }}
-          path: |
-            D:\out\*.log
-            D:\out\timings.txt
-            D:\pg\artifacts\api-test-seam-preflight\*.log
+          path: D:\out\seam-logs
           if-no-files-found: warn
           retention-days: 3
